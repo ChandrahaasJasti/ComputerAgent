@@ -154,6 +154,7 @@ class YOLODetector(Overlays):
     """
     def __init__(self,model_path):
         self.runtime_session = ort.InferenceSession(model_path)
+        self.input_name = self.runtime_session.get_inputs()[0].name
         
     def preprocess_image(self,image_path):
         """
@@ -172,8 +173,13 @@ class YOLODetector(Overlays):
 
     def predict(self,image_path):
         image_tensor,original_size = self.preprocess_image(image_path)
-        outputs = self.runtime_session.run(None, {'input': image_tensor})
+        outputs = self.runtime_session.run(None, {self.input_name: image_tensor})
         predictions = self.postprocess_predictions(outputs,original_size)
+        return predictions
+    
+    def predict_with_log(self,image_path):
+        predictions = self.predict(image_path)
+        self.save_predicted_image(image_path,predictions)
         return predictions
     
     def nms(self, boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5) -> List[int]:
