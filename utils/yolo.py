@@ -13,6 +13,7 @@ class Overlays:
     """
     Utility class for creating and saving overlay images from predictions
     and drawing bounding boxes on images.
+    ENTRYPOINT: save_predicted_image
     """
     def create_overlay_image_from_predictions(self,image_path: str,
                                           predictions: List[Dict[str, Any]],
@@ -123,6 +124,20 @@ class Overlays:
             logger.error(f"Error saving overlay image: {e}")
             return False
 
+    def save_predicted_image(self,image_path: str,predictions: List[Dict[str, Any]],
+                                                 output_path: Optional[str] = None,
+                                                 output_dir: Optional[str] = None,
+                                                 colors: Optional[List[Tuple[int, int, int]]] = None
+                                                 ) -> Tuple[Optional[np.ndarray], bool]:
+        """
+        Convenience method: create overlay from predictions and save it.
+        Uses existing helpers and returns (overlay_image, save_success).
+        """
+        overlay = self.create_overlay_image_from_predictions(image_path, predictions, colors)
+        if overlay is None:
+            return None, False
+        saved = self.save_overlay_image(image_path, overlay, output_path, output_dir)
+        return overlay, saved
 
 
 
