@@ -425,6 +425,7 @@ if __name__ == "__main__":
             output_dir=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tests', 'yolo_outputs')
         )
         print(f"Found {len(preds)} predictions")
+        print(preds[0])
         print("Overlay image saved successfully!" if saved else "Failed to save overlay image")
     else:
         print(f"Test image not found: {test_image_path}")
