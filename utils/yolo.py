@@ -9,6 +9,12 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+"""
+----------------------------------------------------------------------------------------------------------------------------------------------------
+Overlay helpers (consume simplified predictions with 'bounding_box_coordinates' and 'confidence')
+----------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
 class Overlays:
     """
     Utility class for creating and saving overlay images from predictions
@@ -19,8 +25,7 @@ class Overlays:
                                           predictions: List[Dict[str, Any]],
                                           colors: Optional[List[Tuple[int, int, int]]] = None) -> Optional[np.ndarray]:
         """
-        Read image from disk and overlay bounding boxes using simplified predictions.
-        Returns the overlaid image array or None if loading fails.
+        simple caller function for draw_bounding_boxes_from_predictions
         """
         try:
             image = cv2.imread(image_path)
@@ -33,13 +38,7 @@ class Overlays:
 
     def draw_bounding_boxes_from_predictions(self,image: np.ndarray,predictions: List[Dict[str, Any]],colors: Optional[List[Tuple[int, int, int]]] = None) -> np.ndarray:
         """
-        takes an image and predictions, return an overlay image
-
-        Draw bounding boxes on an image using predictions with keys:
-        - 'bounding_box_coordinates': [x1, y1, x2, y2] (in original image pixels)
-        - 'confidence': float
-
-        Returns a copy of the image with overlays.
+        draws bounding boxes on an image using predicted coordinates
         """
         overlay_image = image.copy()
 
@@ -130,8 +129,7 @@ class Overlays:
                                                  colors: Optional[List[Tuple[int, int, int]]] = None
                                                  ) -> Tuple[Optional[np.ndarray], bool]:
         """
-        Convenience method: create overlay from predictions and save it.
-        Uses existing helpers and returns (overlay_image, save_success).
+        ENTRYPOINT FOR THE CLASS
         """
         overlay = self.create_overlay_image_from_predictions(image_path, predictions, colors)
         if overlay is None:
@@ -178,8 +176,126 @@ class YOLODetector(Overlays):
         predictions = self.postprocess_predictions(outputs,original_size)
         return predictions
     
+    def nms(self, boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5) -> List[int]:
+        """
+        NON-MAX-SUPPRESSION(yolo concept to remove overlapping bounding boxes of the same object)
+        """
+        if len(boxes) == 0:
+            return []
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+        order = scores.argsort()[::-1]
+        keep: List[int] = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(int(i))
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+            w = np.maximum(0.0, xx2 - xx1 + 1)
+            h = np.maximum(0.0, yy2 - yy1 + 1)
+            inter = w * h
+            iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-6)
+            inds = np.where(iou <= iou_threshold)[0]
+            order = order[inds + 1]
+        return keep
+
     def postprocess_predictions(self,outputs,original_size):
-        pass
+        predictions: List[Dict[str, Any]] = []
+        
+        try:
+            output = outputs[0]
+            if output.ndim == 3:
+                output = output[0]
+            orig_width, orig_height = original_size
+            confidence_threshold = 0.5
+
+            # Case: output shaped like (5, N) -> rows [xc, yc, w, h, conf] in input pixels
+            if output.shape[0] == 5:
+                x = output[0]
+                y = output[1]
+                w = output[2]
+                h = output[3]
+                conf = output[4]
+
+                conf_mask = conf >= confidence_threshold
+                x = x[conf_mask]
+                y = y[conf_mask]
+                w = w[conf_mask]
+                h = h[conf_mask]
+                conf = conf[conf_mask]
+
+                if x.size == 0:
+                    return []
+
+                # Model input assumed 640x640 (as used in preprocess)
+                scale_x = orig_width / 640.0
+                scale_y = orig_height / 640.0
+
+                x1 = (x - w / 2.0) * scale_x
+                y1 = (y - h / 2.0) * scale_y
+                x2 = (x + w / 2.0) * scale_x
+                y2 = (y + h / 2.0) * scale_y
+                boxes = np.stack([x1, y1, x2, y2], axis=1)
+
+                boxes[:, 0] = np.clip(boxes[:, 0], 0, orig_width - 1)
+                boxes[:, 1] = np.clip(boxes[:, 1], 0, orig_height - 1)
+                boxes[:, 2] = np.clip(boxes[:, 2], 0, orig_width - 1)
+                boxes[:, 3] = np.clip(boxes[:, 3], 0, orig_height - 1)
+
+                keep = self.nms(boxes, conf, iou_threshold=0.5)
+                for i in keep:
+                    predictions.append({
+                        'bounding_box_coordinates': boxes[i].astype(int).tolist(),
+                        'confidence': float(conf[i])
+                    })
+                return predictions
+
+            # Fallback: generic parsing for [num, feat]
+            if output.ndim == 2:
+                for detection in output:
+                    if len(detection) < 5:
+                        continue
+                    confidence = float(detection[4])
+                    if confidence < confidence_threshold:
+                        continue
+                    x_center, y_center, width, height = detection[:4]
+
+                    # If values are pixels, scale by input size; otherwise treat as normalized
+                    if max(width, height, x_center, y_center) > 2.0:
+                        scale_x = orig_width / 640.0
+                        scale_y = orig_height / 640.0
+                        x1 = int((x_center - width / 2.0) * scale_x)
+                        y1 = int((y_center - height / 2.0) * scale_y)
+                        x2 = int((x_center + width / 2.0) * scale_x)
+                        y2 = int((y_center + height / 2.0) * scale_y)
+                    else:
+                        x1 = int((x_center - width / 2.0) * orig_width)
+                        y1 = int((y_center - height / 2.0) * orig_height)
+                        x2 = int((x_center + width / 2.0) * orig_width)
+                        y2 = int((y_center + height / 2.0) * orig_height)
+
+                    # Clamp to image bounds
+                    x1 = max(0, min(orig_width - 1, x1))
+                    y1 = max(0, min(orig_height - 1, y1))
+                    x2 = max(0, min(orig_width - 1, x2))
+                    y2 = max(0, min(orig_height - 1, y2))
+
+                    predictions.append({
+                        'bounding_box_coordinates': [x1, y1, x2, y2],
+                        'confidence': confidence
+                    })
+                return predictions
+
+            logger.error(f"Unhandled output shape: {outputs[0].shape}")
+            return []
+        except Exception as e:
+            logger.error(f"Error post-processing predictions: {e}")
+            return []
     
 
 # -----------------------------------------------------------------------------
